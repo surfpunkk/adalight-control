@@ -6,7 +6,7 @@
 #include <unistd.h>
 
 void set_interface_attribs(int fd, int speed) {
-    struct termios tty; 
+    termios tty{};
     if (tcgetattr(fd, &tty) != 0) return; // copying current settings from file descriptor in tty 
     cfsetospeed(&tty, speed); // output speed 
     cfsetispeed(&tty, speed); // input speed
@@ -39,31 +39,39 @@ int main(int argc, char* argv[]) {
         std::vector<unsigned char> payload;
         payload.reserve(num_leds * 3);
 
-        for (int i = 0; i < num_leds; ++i) {
+        for (int i = 0; i < num_leds; ++i) {  // frame generating
             float r = 0, g = 0, b = 0;
             if (mode == "rainbow") {
-   	      // to be continued...
-            } else if (mode == "red") r = 255;
-	      else if (mode == "blue") b = 255;
-	      else if (mode == "green") g = 255;
-	      else if (mode == "purple") r = 128, b = 255;
-	      else if (mode == "yellow") r = 255, g = 255;
-              else if (mode == "orange") r = 255, g = 140;
-	      else if (mode == "turquoise") g = 255, b = 215;
-	      else if (mode == "neon") {
-		float wave = (sin(t + i * 0.1f) + 1.0f) / 2.0f;
-                r = (100 + 50 * sin(t * 0.5f + i * 0.05f)) / 2;
-                b = 150 * wave;
-	    } else return 1;
+            	float hue = fmodf(t + i * 0.05f, 6.0f);
+            	float x = 255.0f * (1.0f - fabsf(fmodf(hue, 2.0f) - 1.0f));
+            		if (hue < 1.0f)  { r = 255; g = x;   b = 0; }
+            		else if (hue < 2.0f) { r = x;   g = 255; b = 0; }
+            		else if (hue < 3.0f) { r = 0;   g = 255; b = x; }
+            		else if (hue < 4.0f) { r = 0;   g = x;   b = 255; }
+            		else if (hue < 5.0f) { r = x;   g = 0;   b = 255; }
+	           		else { r = 255; g = 0;   b = x; }
+   			} else if (mode == "red") r = 255;
+        	else if (mode == "blue") b = 255;
+        	else if (mode == "green") g = 255;
+        	else if (mode == "purple") r = 128, b = 255;
+        	else if (mode == "yellow") r = 255, g = 255;
+        	else if (mode == "orange") r = 255, g = 140;
+        	else if (mode == "turquoise") g = 255, b = 215;
+        	else if (mode == "neon") {
+        		float wave = (sin(t + i * 0.1f) + 1.0f) / 2.0f;
+        		r = 120 + 135 * sin(t * 0.5f + i * 0.05f) / 2.0f;
+        		b = 255 * wave;
+			} else return 1;
             payload.push_back(static_cast<unsigned char>(r));
             payload.push_back(static_cast<unsigned char>(g));
             payload.push_back(static_cast<unsigned char>(b));
         }
-	ssize_t res;
-	res = write(fd, header.data(), header.size());
-	res = write(fd, payload.data(), payload.size());
-	(void)res;
+		ssize_t res;
+		res = write(fd, header.data(), header.size());
+		res = write(fd, payload.data(), payload.size());
+		(void)res;
         t += speed_step;
+    	if (t > 1000.0) t = 0.0f;
 
         usleep(20000); // 20ms = 50 FPS
     }
