@@ -13,7 +13,7 @@ class Device {
 		int num_leds = 255; // default value ( i guess )
 		int speed_port = 115200; // also default value
 		float speed = 0.15f; // default speed
-		std::string mode = "rainbow"; // default value
+		std::string mode = "neon"; // default mode
 		int fd;
 		void set_interface_attribs(int fd, int speed) {
 			termios tty{};
@@ -33,18 +33,19 @@ class Device {
 			tcsetattr(fd, TCSANOW, &tty); // apply right now
 		}
 	public:
-		Device() {
+		Device() { // constructor
 			load_config();
 			fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_SYNC); // read and write access | ignore terminal control signals | sync output
 			set_interface_attribs(fd, speed_port);
 		}
-		~Device() {
+		~Device() { // destructor
 			close(fd);
 		}
+
 		int get_num_leds() const {return num_leds;}
 		std::string get_mode() const {return mode;}
 		float get_speed() const {return speed;}
-		int get_fd() const {return fd;}
+
 		void load_config() {
 			std::ifstream file(config);
 			std::string line;
@@ -61,6 +62,11 @@ class Device {
 				}
 			}
 		}
+		void send_packet(const std::vector<unsigned char>& header, const std::vector<unsigned char>& payload) { // send to
+			auto res = write(fd, header.data(), header.size());
+			res = write(fd, payload.data(), payload.size());
+			(void)res;
+		}
 };
 
 int main() {
@@ -68,7 +74,6 @@ int main() {
 	int num_leds = device.get_num_leds();
 	std::string mode = device.get_mode();
 	float speed = device.get_speed();
-	int fd = device.get_fd();
     float t = 0;
     std::vector<unsigned char> header = {'A', 'd', 'a', 0x00, 0xFF, 0xAA}; // Adalight protocol frame header for 255 leds
     while (true) {
@@ -102,10 +107,7 @@ int main() {
             payload.push_back(static_cast<unsigned char>(g));
             payload.push_back(static_cast<unsigned char>(b));
         }
-		ssize_t res;
-		res = write(fd, header.data(), header.size());
-		res = write(fd, payload.data(), payload.size());
-		(void)res;
+    	device.send_packet(header, payload);
         t += speed;
     	if (t > 1000.0) t = 0.0f;
 
