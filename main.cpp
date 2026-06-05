@@ -4,37 +4,73 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <fstream>
+#include <sstream>
 
-void set_interface_attribs(int fd, int speed) {
-    termios tty{};
-    if (tcgetattr(fd, &tty) != 0) return; // copying current settings from file descriptor in tty 
-    cfsetospeed(&tty, speed); // output speed 
-    cfsetispeed(&tty, speed); // input speed
-    tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8; // setting strong format size for frame
-    tty.c_iflag &= ~IGNBRK; // turning off ignoring disconnect
-    tty.c_lflag = 0; // disable echo and canonical mode
-    tty.c_oflag = 0; // turning off output processing 
-    tty.c_cc[VMIN] = 0; // read doesn't block (return immediately)
-    tty.c_cc[VTIME] = 5; // timeout for reading 0.5s
-    tty.c_cflag |= (CLOCAL | CREAD); // ignoring other console lines and accepting for reading from port
-    tty.c_cflag &= ~(PARENB | PARODD); // turning off checking errors
-    tty.c_cflag &= ~CSTOPB; // using 1 stop bit
-    tty.c_cflag &= ~CRTSCTS; // turning off hardware management
-    tcsetattr(fd, TCSANOW, &tty); // apply right now
-}
+class Device {
+		const std::string config = "/etc/skydimo-control/skydimo-control.conf";
+		std::string port = "/dev/ttyUSB0"; // or your any other device which you can see with command 'lsusb'
+		int num_leds = 255; // default value ( i guess )
+		int speed_port = 115200; // also default value
+		float speed = 0.15f; // default speed
+		std::string mode = "rainbow"; // default value
+		int fd;
+		void set_interface_attribs(int fd, int speed) {
+			termios tty{};
+			if (tcgetattr(fd, &tty) != 0) return; // copying current settings from file descriptor in tty
+			cfsetospeed(&tty, speed); // output speed
+			cfsetispeed(&tty, speed); // input speed
+			tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8; // setting strong format size for frame
+			tty.c_iflag &= ~IGNBRK; // turning off ignoring disconnect
+			tty.c_lflag = 0; // disable echo and canonical mode
+			tty.c_oflag = 0; // turning off output processing
+			tty.c_cc[VMIN] = 0; // read doesn't block (return immediately)
+			tty.c_cc[VTIME] = 5; // timeout for reading 0.5s
+			tty.c_cflag |= (CLOCAL | CREAD); // ignoring other console lines and accepting for reading from port
+			tty.c_cflag &= ~(PARENB | PARODD); // turning off checking errors
+			tty.c_cflag &= ~CSTOPB; // using 1 stop bit
+			tty.c_cflag &= ~CRTSCTS; // turning off hardware management
+			tcsetattr(fd, TCSANOW, &tty); // apply right now
+		}
+	public:
+		Device() {
+			load_config();
+			fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_SYNC); // read and write access | ignore terminal control signals | sync output
+			set_interface_attribs(fd, speed_port);
+		}
+		~Device() {
+			close(fd);
+		}
+		int get_num_leds() const {return num_leds;}
+		std::string get_mode() const {return mode;}
+		float get_speed() const {return speed;}
+		int get_fd() const {return fd;}
+		void load_config() {
+			std::ifstream file(config);
+			std::string line;
+			while (std::getline(file, line)) {
+				std::stringstream ss(line);
+				std::string word;
+				if (std::getline(ss, word, '=')) {
+					std::string value;
+					if (word == "port") ss >> port;
+					else if (word == "num_leds") ss >> num_leds;
+					else if (word == "speed_port") ss >> speed_port;
+					else if (word == "mode") ss >> mode;
+					else if (word == "speed") ss >> speed;
+				}
+			}
+		}
+};
 
-int main(int argc, char* argv[]) {
-    const char* port = "/dev/ttyUSB0"; // or your any other device which you can see with command 'lsusb'
-    int num_leds = 255; // default value ( i guess )
-    int speed_baud = B115200; // also default value
-    std::string mode = (argc > 1) ? (argv[1]) : "neon"; 
-    float speed_step = (argc > 2) ? std::stof(argv[2]) : 0.15f;
-    int fd = open(port, O_RDWR | O_NOCTTY | O_SYNC); // read and write access | ignore terminal control signals | sync output 
-    set_interface_attribs(fd, speed_baud); // set port speed
-
+int main() {
+	Device device;
+	int num_leds = device.get_num_leds();
+	std::string mode = device.get_mode();
+	float speed = device.get_speed();
+	int fd = device.get_fd();
     float t = 0;
     std::vector<unsigned char> header = {'A', 'd', 'a', 0x00, 0xFF, 0xAA}; // Adalight protocol frame header for 255 leds
-
     while (true) {
         std::vector<unsigned char> payload;
         payload.reserve(num_leds * 3);
@@ -70,12 +106,10 @@ int main(int argc, char* argv[]) {
 		res = write(fd, header.data(), header.size());
 		res = write(fd, payload.data(), payload.size());
 		(void)res;
-        t += speed_step;
+        t += speed;
     	if (t > 1000.0) t = 0.0f;
 
         usleep(20000); // 20ms = 50 FPS
     }
-
-    close(fd);
     return 0;
 }
