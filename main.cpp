@@ -8,13 +8,13 @@
 #include <sstream>
 
 class Device {
-		const std::string config = "/etc/skydimo-control/skydimo-control.conf";
+		const std::string config = "/etc/skydimo-control/skydimo-control.conf"; // config path
 		std::string port = "/dev/ttyUSB0"; // or your any other device which you can see with command 'lsusb'
 		int num_leds = 255; // default value ( i guess )
 		int speed_port = 115200; // also default value
 		float speed = 0.15f; // default speed
-		std::string mode = "neon"; // default mode
-		int fd;
+		std::string mode = "rainbow"; // default mode
+		int fd = -1;
 		void set_interface_attribs(int fd, int speed) {
 			termios tty{};
 			if (tcgetattr(fd, &tty) != 0) return; // copying current settings from file descriptor in tty
@@ -36,10 +36,11 @@ class Device {
 		Device() { // constructor
 			load_config();
 			fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_SYNC); // read and write access | ignore terminal control signals | sync output
+			if (fd < 0) throw std::runtime_error("Port is not opened: " + port);
 			set_interface_attribs(fd, speed_port);
 		}
 		~Device() { // destructor
-			close(fd);
+			if (fd >= 0) close(fd);
 		}
 
 		int get_num_leds() const {return num_leds;}
@@ -62,7 +63,14 @@ class Device {
 				}
 			}
 		}
-		void send_packet(const std::vector<unsigned char>& header, const std::vector<unsigned char>& payload) { // send to
+		std::vector<unsigned char> update_header () { // header generating for leds
+			int ledcount = num_leds - 1;
+			unsigned char hiByte = (ledcount >> 8) & 0xFF;
+			unsigned char loByte = ledcount & 0xFF;
+			unsigned char checksum = hiByte ^ loByte ^ 0x55;
+			return {'A', 'd', 'a', hiByte, loByte, checksum};
+		}
+		void send_packet(const std::vector<unsigned char>& header, const std::vector<unsigned char>& payload) { // send to strip
 			auto res = write(fd, header.data(), header.size());
 			res = write(fd, payload.data(), payload.size());
 			(void)res;
@@ -75,11 +83,11 @@ int main() {
 	std::string mode = device.get_mode();
 	float speed = device.get_speed();
     float t = 0;
-    std::vector<unsigned char> header = {'A', 'd', 'a', 0x00, 0xFF, 0xAA}; // Adalight protocol frame header for 255 leds
+	std::vector<unsigned char> header = device.update_header();
+	std::vector<unsigned char> payload;
+	payload.reserve(num_leds * 3);
     while (true) {
-        std::vector<unsigned char> payload;
-        payload.reserve(num_leds * 3);
-
+        payload.clear();
         for (int i = 0; i < num_leds; ++i) {  // frame generating
             float r = 0, g = 0, b = 0;
             if (mode == "rainbow") {
@@ -99,10 +107,10 @@ int main() {
         	else if (mode == "orange") r = 255, g = 140;
         	else if (mode == "turquoise") g = 255, b = 215;
         	else if (mode == "neon") {
-        		float wave = (sin(t + i * 0.1f) + 1.0f) / 2.0f;
-        		r = 120 + 135 * sin(t * 0.5f + i * 0.05f) / 2.0f;
+        		float wave = (sinf(t + i * 0.1f) + 1.0f) / 2.0f;
+        		r = 120 + 135 * sinf(t * 0.5f + i * 0.05f) / 2.0f;
         		b = 255 * wave;
-			} else return 1;
+			} else throw std::runtime_error("Unknow mode: " + mode);
             payload.push_back(static_cast<unsigned char>(r));
             payload.push_back(static_cast<unsigned char>(g));
             payload.push_back(static_cast<unsigned char>(b));
@@ -113,5 +121,4 @@ int main() {
 
         usleep(20000); // 20ms = 50 FPS
     }
-    return 0;
 }
