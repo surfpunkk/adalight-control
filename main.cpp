@@ -20,21 +20,46 @@ class Device {
 		float r = 0, g = 0, b = 0;
 		std::vector<unsigned char> payload, header;
 
+		std::map <std::string, std::vector<float>, std::less<>> colors = { // colour base
+			{"red", {255, 0, 0}},
+			{"green", {0, 255, 0}},
+			{"blue", {0, 0, 255}},
+			{"cyan", {0, 255, 255}},
+			{"yellow", {255, 255, 0}},
+			{"magenta", {255, 0, 255}},
+			{"orange", {255, 165, 0}},
+			{"turquoise", {0, 255, 215}},
+			{"white", {255, 255, 255}},
+		};
+
 		void load_config() { // reading existing config
 			std::ifstream file(config);
-			std::string line;
-			while (std::getline(file, line)) {
-				std::stringstream ss(line);
-				std::string word;
-				if (std::getline(ss, word, '=')) {
-					std::string value;
-					if (word == "port") ss >> port;
-					else if (word == "num_leds") ss >> num_leds;
-					else if (word == "speed_port") ss >> speed_port;
-					else if (word == "mode") ss >> mode;
-					else if (word == "speed") ss >> speed;
+				std::string line;
+				while (std::getline(file, line)) {
+					std::stringstream ss(line);
+					std::string word;
+					if (std::getline(ss, word, '=')) {
+						std::string value;
+						if (word == "port") ss >> port;
+						else if (word == "num_leds") ss >> num_leds;
+						else if (word == "speed_port") ss >> speed_port;
+						else if (word == "mode") ss >> mode;
+						else if (word == "speed") ss >> speed;
+					}
 				}
 			}
+
+		std::vector<float>* static_color = colors.count(mode) ? &colors[mode] : nullptr;
+
+		std::pair<const std::vector<float>*, const std::vector<float>*> color_effect(std::string_view mode) {
+			size_t dash_pos = mode.find('-');
+			if (dash_pos == std::string_view::npos) return {nullptr, nullptr};
+			std::string_view left_key = mode.substr(0, dash_pos);
+			std::string_view right_key = mode.substr(dash_pos + 1);
+			auto left = colors.find(left_key);
+			auto right = colors.find(right_key);
+			if (left != colors.end() && right != colors.end()) return { &(left->second), &(right->second) };
+			return {nullptr, nullptr};
 		}
 
 		void set_interface_attribs(int fd, int speed) {
@@ -63,44 +88,47 @@ class Device {
 			header = {'A', 'd', 'a', hiByte, loByte, checksum};
 		}
 
-		void modes() {
-				std::map <std::string, std::vector<float>> colors = {
-					{"red", {255, 0, 0}},
-					{"green", {0, 255, 0}},
-					{"blue", {0, 0, 255}},
-					{"cyan", {0, 255, 255}},
-					{"yellow", {255, 255, 0}},
-					{"magenta", {255, 0, 255}},
-					{"orange", {255, 165, 0}},
-					{"turquoise", {0, 255, 215}},
-					{"white", {255, 255, 255}},
-				};
-
-				std::vector<float>* static_color = colors.count(mode) ? &colors[mode] : nullptr;
-				for (int i = 0; i < num_leds; ++i) {
-					if (static_color != nullptr) {
-						auto &c = *static_color;
-						r = c[0];
-						g = c[1];
-						b = c[2];
-					} else if (mode == "rainbow") {
-						float hue = fmodf(t + i * 0.05f, 6.0f);
-						float x = 255.0f * (1.0f - fabsf(fmodf(hue, 2.0f) - 1.0f));
-						if (hue < 1.0f)  { r = 255; g = x;   b = 0; }
-						else if (hue < 2.0f) { r = x;   g = 255; b = 0; }
-						else if (hue < 3.0f) { r = 0;   g = 255; b = x; }
-						else if (hue < 4.0f) { r = 0;   g = x;   b = 255; }
-						else if (hue < 5.0f) { r = x;   g = 0;   b = 255; }
-						else { r = 255; g = 0;   b = x; }
-					} else if (mode == "neon") {
-						float wave = (sinf(t + i * 0.1f) + 1.0f) / 2.0f;
-						r = 120 + 135 * sinf(t * 0.5f + i * 0.05f) / 2.0f;
-						b = 255 * wave;
-					} else throw std::runtime_error("Unknown mode: " + mode);
-					payload.push_back(static_cast<unsigned char>(r));
-					payload.push_back(static_cast<unsigned char>(g));
-					payload.push_back(static_cast<unsigned char>(b));
+		void modes(int i) {
+			auto [color1, color2] = color_effect(mode);
+			if (static_color != nullptr) {
+				auto &c = *static_color;
+				r = c[0], g = c[1], b = c[2];
+			} else if (color1 && color2 ) {
+				auto &c1 = *color1;
+				auto &c2 = *color2;
+				float speed = 50.0f;
+				int offset = static_cast<int>(t * speed) % num_leds;
+				if (offset < 0) offset += num_leds;
+				int position = (i - offset + num_leds) % num_leds;
+				if (position < num_leds / 2) {
+					r = c1[0]; g = c1[1]; b = c1[2];
+				} else {
+					r = c2[0]; g = c2[1]; b = c2[2];
 				}
+			} else if (mode == "rainbow") {
+				float hue = fmodf(t + i * 0.05f, 6.0f);
+				float x = 255.0f * (1.0f - fabsf(fmodf(hue, 2.0f) - 1.0f));
+				if (hue < 1.0f)  { r = 255; g = x;   b = 0; }
+				else if (hue < 2.0f) { r = x;   g = 255; b = 0; }
+				else if (hue < 3.0f) { r = 0;   g = 255; b = x; }
+				else if (hue < 4.0f) { r = 0;   g = x;   b = 255; }
+				else if (hue < 5.0f) { r = x;   g = 0;   b = 255; }
+				else { r = 255; g = 0;   b = x; }
+			} else if (mode == "neon") {
+				float wave = (sinf(t + i * 0.1f) + 1.0f) / 2.0f;
+				r = 120 + 135 * sinf(t * 0.5f + i * 0.05f) / 2.0f;
+				b = 255 * wave;
+			} else throw std::runtime_error("Unknown mode: " + mode);
+		}
+
+		void push_mode () {
+			for (int i = 0; i < num_leds; ++i) {
+				modes(i);
+				size_t idx = i * 3;
+				payload.push_back(static_cast<unsigned char>(r));
+				payload.push_back(static_cast<unsigned char>(g));
+				payload.push_back(static_cast<unsigned char>(b));
+			}
 		}
 
 		void send_packet() { // send to strip
@@ -126,7 +154,7 @@ class Device {
 			payload.reserve(num_leds * 3);
 			while (true) {
 				payload.clear();
-				modes();
+				push_mode();
 				send_packet();
 				t += speed;
 				if (t > 1000.0) t = 0.0f;
