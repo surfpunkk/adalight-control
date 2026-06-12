@@ -8,13 +8,14 @@
 #include <sstream>
 #include <map>
 
-struct config {
+class Config {
+public:
 	const std::string config = "/etc/skydimo-control/skydimo-control.conf"; // config path
 	std::string port = "/dev/ttyUSB0"; // or your any other device which you can see with command 'lsusb'
 	int num_leds = 255; // default value ( i guess )
 	int speed_port = 115200; // also default value
 	float speed = 0.15f; // default speed
-	std::string mode = "rainbow"; // default mode
+	std::string mode = "red-blue"; // default mode
 	float r = 0, g = 0, b = 0;
 	void load_config() { // reading existing config
 		std::ifstream file(config);
@@ -32,11 +33,12 @@ struct config {
 			}
 		}
 	}
+	Config () { load_config(); }
 };
 
 class Effect {
-	friend class Device;
-	config &cfg;
+	friend class Run;
+	Config &cfg;
 	float t = 0.0f;
 	std::map <std::string, std::vector<float>, std::less<>> colors = { // colour base
 		{"red", {255, 0, 0}},
@@ -70,7 +72,8 @@ class Effect {
 		} else if (color1 && color2 ) {
 			auto &c1 = *color1;
 			auto &c2 = *color2;
-			int offset = static_cast<int>(t * cfg.speed) % cfg.num_leds;
+			float speed = 50.0f;
+			int offset = static_cast<int>(t * speed) % cfg.num_leds;
 			if (offset < 0) offset += cfg.num_leds;
 			int position = (i - offset + cfg.num_leds) % cfg.num_leds;
 			if (position < cfg.num_leds / 2) {
@@ -94,15 +97,16 @@ class Effect {
 		} else throw std::runtime_error("Unknown mode: " + cfg.mode);
 	}
 
-protected:
-	Effect(config &c) : cfg(c) {}
+public:
+	Effect (Config &c) : cfg(c) {
+	}
 };
 
 class Device {
-	config cfg;
+	friend class Run;
+	Config &cfg;
 	int fd = -1;
-	std::vector<unsigned char> payload, header;
-	Effect effect;
+	std::vector<unsigned char> header;
 
 	void set_interface_attribs(int fd, int speed) {
 		termios tty{};
@@ -130,49 +134,58 @@ class Device {
 		header = {'A', 'd', 'a', hiByte, loByte, checksum};
 	}
 
-	void push_mode () {
-		for (int i = 0; i < cfg.num_leds; ++i) {
-			effect.modes(i);
-			size_t idx = i * 3;
-			payload.push_back(static_cast<unsigned char>(cfg.r));
-			payload.push_back(static_cast<unsigned char>(cfg.g));
-			payload.push_back(static_cast<unsigned char>(cfg.b));
-		}
-	}
-
-	void send_packet() { // send to strip
-		auto res = write(fd, header.data(), header.size());
-		res = write(fd, payload.data(), payload.size());
-		(void)res;
-	}
-
 public:
-	Device() : effect(cfg) { // constructor
-		cfg.load_config();
+	Device(Config &c) : cfg(c) {
 		fd = open(cfg.port.c_str(), O_RDWR | O_NOCTTY | O_SYNC); // read and write access | ignore terminal control signals | sync output
 		if (fd < 0) throw std::runtime_error("Port is not opened: " + cfg.port);
 		set_interface_attribs(fd, cfg.speed_port);
 		update_header();
 	}
 
-	~Device() { // destructor
+	~Device() {
 		if (fd >= 0) close(fd);
 	}
+};
 
-	void run () {
-		payload.reserve(cfg.num_leds * 3);
+class Run {
+	Config config;
+	Effect effect;
+	Device device;
+	std::vector<unsigned char> payload;
+	void push_mode () {
+		for (int i = 0; i < config.num_leds; ++i) {
+			effect.modes(i);
+			payload.push_back(static_cast<unsigned char>(config.r));
+			payload.push_back(static_cast<unsigned char>(config.g));
+			payload.push_back(static_cast<unsigned char>(config.b));
+		}
+	}
+
+	void send_packet() { // send to strip
+		auto res = write(device.fd, device.header.data(), device.header.size());
+		res = write(device.fd, payload.data(), payload.size());
+		(void)res;
+	}
+
+	void letsgo () {
+		push_mode();
+		send_packet();
+		payload.reserve(config.num_leds * 3);
 		while (true) {
 			payload.clear();
 			push_mode();
 			send_packet();
-			effect.t += cfg.speed;
-			if (effect.t > 1000.0) effect.t = 0.0f;
+			effect.t += config.speed;
+			if (effect.t >= 10e37) effect.t = 0.0f;
 			usleep(20000); // 20ms = 50 FPS
 		}
+	}
+	public:
+	Run() : effect(config), device(config) {
+		letsgo ();
 	}
 };
 
 int main() {
-	Device device;
-	device.run();
+	Run run;
 }
