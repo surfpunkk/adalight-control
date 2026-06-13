@@ -15,7 +15,8 @@ public:
 	int num_leds = 255; // default value ( i guess )
 	int speed_port = 115200; // also default value
 	float speed = 0.15f; // default speed
-	std::string mode = "red-blue"; // default mode
+	float brightness = 1.0f; // default brightness
+	std::string mode = "rainbow"; // default mode
 	float r = 0, g = 0, b = 0;
 	void load_config() { // reading existing config
 		std::ifstream file(config);
@@ -30,6 +31,7 @@ public:
 				else if (word == "speed_port") ss >> speed_port;
 				else if (word == "mode") ss >> mode;
 				else if (word == "speed") ss >> speed;
+				else if (word == "brightness") { ss >> brightness; if (brightness > 1 ) brightness /= 100; if (brightness > 100) brightness = 1.0f; }
 			}
 		}
 	}
@@ -155,6 +157,11 @@ class Run {
 	void push_mode () {
 		for (int i = 0; i < config.num_leds; ++i) {
 			effect.modes(i);
+			if (config.brightness < 1.0f) {
+				config.r *= config.brightness;
+				config.b *= config.brightness;
+				config.g *= config.brightness;
+			}
 			payload.push_back(static_cast<unsigned char>(config.r));
 			payload.push_back(static_cast<unsigned char>(config.g));
 			payload.push_back(static_cast<unsigned char>(config.b));
