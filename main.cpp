@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <tuple>
 
 class Config {
 public:
@@ -17,7 +18,7 @@ public:
 	float speed = 0.15f; // default speed
 	float brightness = 1.0f; // default brightness
 	std::string mode = "rainbow"; // default mode
-	float r = 0, g = 0, b = 0;
+	std::string effect = "static"; // default effect
 	void load_config() { // reading existing config
 		std::ifstream file(config);
 		std::string line;
@@ -30,6 +31,7 @@ public:
 				else if (word == "num_leds") ss >> num_leds;
 				else if (word == "speed_port") ss >> speed_port;
 				else if (word == "mode") ss >> mode;
+				else if (word == "effect") ss >> effect;
 				else if (word == "speed") ss >> speed;
 				else if (word == "brightness") { ss >> brightness; if (brightness > 1 ) brightness /= 100; if (brightness > 100) brightness = 1.0f; }
 			}
@@ -39,6 +41,8 @@ public:
 };
 
 class Effect {
+	float r = 0, g = 0, b = 0;
+	using EffectsFunc = float (*)(float t, int i);
 	friend class Run;
 	Config &cfg;
 	float t = 0.0f;
@@ -54,23 +58,47 @@ class Effect {
 		{"white", {255, 255, 255}},
 	};
 
-	std::pair<const std::vector<float>*, const std::vector<float>*> color_effect(std::string_view mode) {
-		size_t dash_pos = mode.find('-');
-		if (dash_pos == std::string_view::npos) return {nullptr, nullptr};
-		std::string_view left_key = mode.substr(0, dash_pos);
-		std::string_view right_key = mode.substr(dash_pos + 1);
-		auto left = colors.find(left_key);
-		auto right = colors.find(right_key);
-		if (left != colors.end() && right != colors.end()) return { &(left->second), &(right->second) };
-		return {nullptr, nullptr};
+	std::map<std::string, EffectsFunc, std::less<>> effects = {
+		{"breath", [](float t, int i) {
+			return (sinf(t + 0.0f) + 1.0f) / 2.0f;
+		}},
+		{"shine", [](float t, int i) {
+			return fabsf(sinf(t * 2.0f + i * 0.2f));
+		}},
+		{"static", [] (float t, int i) { return 1.0f; }}
+	};
+
+	auto load_effects(int i) {
+		float wave = 0.0f;
+		bool exs_effect = false;
+		auto color_effect = [&](std::string_view mode) -> std::pair<const std::vector<float>*, const std::vector<float>*> {
+			size_t dash_pos = mode.find('-');
+			if (dash_pos == std::string_view::npos) return {nullptr, nullptr};
+			std::string_view left_key = mode.substr(0, dash_pos);
+			std::string_view right_key = mode.substr(dash_pos + 1);
+			auto left = colors.find(left_key);
+			auto right = colors.find(right_key);
+			if (left != colors.end() && right != colors.end()) return { &(left->second), &(right->second) };
+			return {nullptr, nullptr};
+		};
+		auto static_color = colors.count(cfg.mode) ? &colors[cfg.mode] : nullptr;
+		auto [color1, color2] = color_effect(cfg.mode);
+		auto it = effects.find(cfg.effect);
+		if (it != effects.end()) {
+			wave = it->second(t, i);
+			exs_effect = true;
+		} else exs_effect = false;
+		return std::make_tuple(static_color, color1, color2, wave, exs_effect);
 	}
 
 	void modes(int i) {
-		auto static_color = colors.count(cfg.mode) ? &colors[cfg.mode] : nullptr;
-		auto [color1, color2] = color_effect(cfg.mode);
+		auto [static_color, color1, color2, wave, exs_effect] = load_effects(i);
 		if (static_color != nullptr) {
 			auto &c = *static_color;
-			cfg.r = c[0], cfg.g = c[1], cfg.b = c[2];
+			r = c[0], g = c[1], b = c[2];
+			if (exs_effect) {
+				r *= wave, g *= wave, b *= wave;
+			}
 		} else if (color1 && color2 ) {
 			auto &c1 = *color1;
 			auto &c2 = *color2;
@@ -79,23 +107,23 @@ class Effect {
 			if (offset < 0) offset += cfg.num_leds;
 			int position = (i - offset + cfg.num_leds) % cfg.num_leds;
 			if (position < cfg.num_leds / 2) {
-				cfg.r = c1[0]; cfg.g = c1[1]; cfg.b = c1[2];
+				r = c1[0]; g = c1[1]; b = c1[2];
 			} else {
-				cfg.r = c2[0]; cfg.g = c2[1]; cfg.b = c2[2];
+				r = c2[0]; g = c2[1]; b = c2[2];
 			}
 		} else if (cfg.mode == "rainbow") {
 			float hue = fmodf(t + i * 0.05f, 6.0f);
 			float x = 255.0f * (1.0f - fabsf(fmodf(hue, 2.0f) - 1.0f));
-			if (hue < 1.0f)  { cfg.r = 255; cfg.g = x;   cfg.b = 0; }
-			else if (hue < 2.0f) { cfg.r = x;   cfg.g = 255; cfg.b = 0; }
-			else if (hue < 3.0f) { cfg.r = 0;   cfg.g = 255; cfg.b = x; }
-			else if (hue < 4.0f) { cfg.r = 0;   cfg.g = x;   cfg.b = 255; }
-			else if (hue < 5.0f) { cfg.r = x;   cfg.g = 0;   cfg.b = 255; }
-			else { cfg.r = 255; cfg.g = 0; cfg.b = x; }
+			if (hue < 1.0f)  { r = 255; g = x;   b = 0; }
+			else if (hue < 2.0f) { r = x;   g = 255; b = 0; }
+			else if (hue < 3.0f) { r = 0;   g = 255; b = x; }
+			else if (hue < 4.0f) { r = 0;   g = x;   b = 255; }
+			else if (hue < 5.0f) { r = x;   g = 0;   b = 255; }
+			else { r = 255; g = 0; b = x; }
 		} else if (cfg.mode == "neon") {
 			float wave = (sinf(t + i * 0.1f) + 1.0f) / 2.0f;
-			cfg.r = 120 + 135 * sinf(t * 0.5f + i * 0.05f) / 2.0f;
-			cfg.b = 255 * wave;
+			r = 120 + 135 * sinf(t * 0.5f + i * 0.05f) / 2.0f;
+			b = 255 * wave;
 		} else throw std::runtime_error("Unknown mode: " + cfg.mode);
 	}
 
@@ -129,11 +157,11 @@ class Device {
 	}
 
 	void update_header () { // header generating for leds
-		int ledcount = cfg.num_leds - 1;
-		unsigned char hiByte = (ledcount >> 8) & 0xFF;
-		unsigned char loByte = ledcount & 0xFF;
-		unsigned char checksum = hiByte ^ loByte ^ 0x55;
-		header = {'A', 'd', 'a', hiByte, loByte, checksum};
+		int ledcount = cfg.num_leds - 1; // 32-bit variable
+		unsigned char hiByte = (ledcount >> 8) & 0xFF; // shift by 8 bits and turn everything to zeros except the last 8 bits (needed for strip > 256 leds, limit - 65536 leds)
+		unsigned char loByte = ledcount & 0xFF; // writing the last 8 bits
+		unsigned char checksum = hiByte ^ loByte ^ 0x55; // 0x55 - 01010101 (default Adalight checksum validator)
+		header = {'A', 'd', 'a', hiByte, loByte, checksum}; // general frame header
 	}
 
 public:
@@ -157,14 +185,14 @@ class Run {
 	void push_mode () {
 		for (int i = 0; i < config.num_leds; ++i) {
 			effect.modes(i);
-			if (config.brightness < 1.0f) {
-				config.r *= config.brightness;
-				config.b *= config.brightness;
-				config.g *= config.brightness;
+			if (config.brightness < 1.0f) { // brightness adjustment
+				effect.r *= config.brightness;
+				effect.b *= config.brightness;
+				effect.g *= config.brightness;
 			}
-			payload.push_back(static_cast<unsigned char>(config.r));
-			payload.push_back(static_cast<unsigned char>(config.g));
-			payload.push_back(static_cast<unsigned char>(config.b));
+			payload.push_back(static_cast<unsigned char>(effect.r));
+			payload.push_back(static_cast<unsigned char>(effect.g));
+			payload.push_back(static_cast<unsigned char>(effect.b));
 		}
 	}
 
@@ -175,9 +203,9 @@ class Run {
 	}
 
 	void letsgo () {
+		payload.reserve(config.num_leds * 3);
 		push_mode();
 		send_packet();
-		payload.reserve(config.num_leds * 3);
 		while (true) {
 			payload.clear();
 			push_mode();
