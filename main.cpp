@@ -13,7 +13,8 @@ class Config {
 public:
 	const std::string config = "/etc/skydimo-control/skydimo-control.conf"; // config path
 	std::string port = "/dev/ttyUSB0"; // or your any other device which you can see with command 'lsusb'
-	int num_leds = 255; // default value ( i guess )
+	int num_leds = 65; // led counts
+	int packet_buffer_size = 765; // default value for sending data packet with colors
 	int speed_port = 115200; // also default value
 	float speed = 0.15f; // default speed
 	float brightness = 1.0f; // default brightness
@@ -34,6 +35,7 @@ public:
 				else if (word == "effect") ss >> effect;
 				else if (word == "speed") ss >> speed;
 				else if (word == "brightness") { ss >> brightness; if (brightness > 1 ) brightness /= 100; if (brightness > 100) brightness = 1.0f; }
+				else if (word == "packet_buffer_size") ss >> packet_buffer_size;
 			}
 		}
 	}
@@ -62,8 +64,11 @@ class Effect {
 		{"breath", [](float t, int i) {
 			return (sinf(t + 0.0f) + 1.0f) / 2.0f;
 		}},
+		{"pulsar", [](float t, int i) {
+			return (sinf(t * 10.0f) + 1.0f) / 2.0f;
+		}},
 		{"shine", [](float t, int i) {
-			return fabsf(sinf(t * 2.0f + i * 0.2f));
+			return fabsf(sinf(t * 2.0f + i * 0.1f));
 		}},
 		{"static", [] (float t, int i) { return 1.0f; }}
 	};
@@ -100,16 +105,11 @@ class Effect {
 				r *= wave, g *= wave, b *= wave;
 			}
 		} else if (color1 && color2 ) {
-			auto &c1 = *color1;
-			auto &c2 = *color2;
-			float speed = 50.0f;
-			int offset = static_cast<int>(t * speed) % cfg.num_leds;
-			if (offset < 0) offset += cfg.num_leds;
-			int position = (i - offset + cfg.num_leds) % cfg.num_leds;
-			if (position < cfg.num_leds / 2) {
-				r = c1[0]; g = c1[1]; b = c1[2];
-			} else {
-				r = c2[0]; g = c2[1]; b = c2[2];
+			int midpoint = cfg.num_leds / 2;
+			auto &c = i < midpoint ? *color1 : *color2;
+			r = c[0]; g = c[1]; b = c[2];
+			if (exs_effect) {
+				r *= wave; g *= wave; b *= wave;
 			}
 		} else if (cfg.mode == "rainbow") {
 			float hue = fmodf(t + i * 0.05f, 6.0f);
@@ -157,7 +157,8 @@ class Device {
 	}
 
 	void update_header () { // header generating for leds
-		int ledcount = cfg.num_leds - 1; // 32-bit variable
+		int ledcount = cfg.packet_buffer_size / 3 - 1;
+		ledcount = ledcount > cfg.num_leds - 1 ? ledcount : cfg.num_leds - 1; // 32-bit variable
 		unsigned char hiByte = (ledcount >> 8) & 0xFF; // shift by 8 bits and turn everything to zeros except the last 8 bits (needed for strip > 256 leds, limit - 65536 leds)
 		unsigned char loByte = ledcount & 0xFF; // writing the last 8 bits
 		unsigned char checksum = hiByte ^ loByte ^ 0x55; // 0x55 - 01010101 (default Adalight checksum validator)
@@ -182,13 +183,14 @@ class Run {
 	Effect effect;
 	Device device;
 	std::vector<unsigned char> payload;
-	void push_mode () {
+	std::vector<unsigned char> nulls;
+	void push_colors () {
 		for (int i = 0; i < config.num_leds; ++i) {
 			effect.modes(i);
 			if (config.brightness < 1.0f) { // brightness adjustment
 				effect.r *= config.brightness;
-				effect.b *= config.brightness;
 				effect.g *= config.brightness;
+				effect.b *= config.brightness;
 			}
 			payload.push_back(static_cast<unsigned char>(effect.r));
 			payload.push_back(static_cast<unsigned char>(effect.g));
@@ -196,19 +198,30 @@ class Run {
 		}
 	}
 
+	void prepare_nulls () {
+		int total_bytes = config.packet_buffer_size;
+		int color_bytes = payload.size();
+		if (total_bytes > color_bytes) {
+			nulls.resize(total_bytes - color_bytes, 0);
+		}
+	}
+
 	void send_packet() { // send to strip
 		auto res = write(device.fd, device.header.data(), device.header.size());
 		res = write(device.fd, payload.data(), payload.size());
+		if (!nulls.empty()) {
+			res = write(device.fd, nulls.data(), nulls.size());
+		}
 		(void)res;
 	}
 
 	void letsgo () {
 		payload.reserve(config.num_leds * 3);
-		push_mode();
+		prepare_nulls();
 		send_packet();
 		while (true) {
 			payload.clear();
-			push_mode();
+			push_colors();
 			send_packet();
 			effect.t += config.speed;
 			if (effect.t >= 10e37) effect.t = 0.0f;
