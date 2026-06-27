@@ -30,12 +30,12 @@ public:
 				std::string value;
 				if (word == "port") ss >> port;
 				else if (word == "num_leds") ss >> num_leds;
+				else if (word == "packet_buffer_size") ss >> packet_buffer_size;
 				else if (word == "speed_port") ss >> speed_port;
-				else if (word == "mode") ss >> mode;
-				else if (word == "effect") ss >> effect;
 				else if (word == "speed") ss >> speed;
 				else if (word == "brightness") { ss >> brightness; if (brightness > 1 ) brightness /= 100; if (brightness > 100) brightness = 1.0f; }
-				else if (word == "packet_buffer_size") ss >> packet_buffer_size;
+				else if (word == "mode") ss >> mode;
+				else if (word == "effect") ss >> effect;
 			}
 		}
 	}
@@ -43,87 +43,128 @@ public:
 };
 
 class Effect {
-	float r = 0, g = 0, b = 0;
-	using EffectsFunc = float (*)(float t, int i);
 	friend class Run;
+	float r = 0, g = 0, b = 0;
+	using EffectResult = std::pair<const float*, size_t>;
+	using EffectsFunc = EffectResult(*)(float t, int i);
 	Config &cfg;
 	float t = 0.0f;
-	std::map <std::string, std::vector<float>, std::less<>> colors = { // colour base
+	std::map <std::string, std::vector<float>, std::less<>> colors = { // colors base
 		{"red", {255, 0, 0}},
 		{"green", {0, 255, 0}},
 		{"blue", {0, 0, 255}},
-		{"cyan", {0, 255, 255}},
+		{"azure", {0, 191, 255}},
 		{"yellow", {255, 255, 0}},
-		{"magenta", {255, 0, 255}},
 		{"orange", {255, 165, 0}},
+		{"cyan", {0, 255, 255}},
+		{"pink", {255, 56, 91}},
+		{"purple", {128, 0, 128}},
 		{"turquoise", {0, 255, 215}},
 		{"white", {255, 255, 255}},
+		{"brown", {160, 82, 45}},
 	};
 
 	std::map<std::string, EffectsFunc, std::less<>> effects = {
-		{"breath", [](float t, int i) {
-			return (sinf(t + 0.0f) + 1.0f) / 2.0f;
+		{"breath", [](float t, int i) -> EffectResult {
+			static float wave[1];
+			wave[0]=(sinf(t + 0.0f) + 1.0f) / 2.0f;
+			return {wave, 1};
 		}},
-		{"pulsar", [](float t, int i) {
-			return (sinf(t * 10.0f) + 1.0f) / 2.0f;
+		{"pulsar", [](float t, int i) -> EffectResult {
+			static float wave[1];
+			wave[0] = (sinf(t * 10.0f) + 1.0f) / 2.0f;
+			return {wave, 1};
 		}},
-		{"shine", [](float t, int i) {
-			return fabsf(sinf(t * 2.0f + i * 0.1f));
+		{"shine", [](float t, int i) -> EffectResult {
+			static float wave[1];
+			wave[0] = fabsf(sinf(t * 2.0f + i * 0.1f));
+			return {wave, 1};
 		}},
-		{"static", [] (float t, int i) { return 1.0f; }}
+		{"forward_breathing", [](float t, int i) -> EffectResult {
+			static float wave[2];
+			wave[0] = sinf(t * 0.5f + i * 0.05f) / 2.0f;
+			wave[1] = (sinf(t + i * 0.1f) + 1.0f) / 2.0f;
+			return {wave, 2};
+		}},
+		{"static", [] (float t, int i) -> EffectResult {
+				static  float wave [1];
+				wave[0] = 1.0f;
+				return {wave, 1};
+		}}
 	};
 
-	auto load_effects(int i) {
+	std::pair<const std::vector<float>*, const std::vector<float>*> what_colors(std::string_view mode) { // color parsing
+		size_t dash_pos = mode.find('-');
+		if (dash_pos == std::string_view::npos) return {nullptr, nullptr};
+		std::string_view left_key = mode.substr(0, dash_pos);
+		std::string_view right_key = mode.substr(dash_pos + 1);
+		auto left = colors.find(left_key);
+		auto right = colors.find(right_key);
+		if (left != colors.end() && right != colors.end()) return { &(left->second), &(right->second) };
+		return {nullptr, nullptr};
+	}
+
+	EffectResult load_effect (const std::string& effect, int i) {
+		auto it = effects.find(effect);
+		if (it != effects.end()) return it->second(t, i);
+		return { nullptr, 0};
+	}
+
+	auto load_user_settings(int i) { // take user settings
 		float wave = 0.0f;
 		bool exs_effect = false;
-		auto color_effect = [&](std::string_view mode) -> std::pair<const std::vector<float>*, const std::vector<float>*> {
-			size_t dash_pos = mode.find('-');
-			if (dash_pos == std::string_view::npos) return {nullptr, nullptr};
-			std::string_view left_key = mode.substr(0, dash_pos);
-			std::string_view right_key = mode.substr(dash_pos + 1);
-			auto left = colors.find(left_key);
-			auto right = colors.find(right_key);
-			if (left != colors.end() && right != colors.end()) return { &(left->second), &(right->second) };
-			return {nullptr, nullptr};
-		};
 		auto static_color = colors.count(cfg.mode) ? &colors[cfg.mode] : nullptr;
-		auto [color1, color2] = color_effect(cfg.mode);
-		auto it = effects.find(cfg.effect);
-		if (it != effects.end()) {
-			wave = it->second(t, i);
+		auto [effect, size] = load_effect(cfg.effect, i);
+		if (effect != nullptr) {
+			wave = effect[0];
 			exs_effect = true;
-		} else exs_effect = false;
-		return std::make_tuple(static_color, color1, color2, wave, exs_effect);
+		}
+		return std::make_tuple(static_color, wave, exs_effect);
+	}
+
+	void load_color (std::string color) {
+		auto wcolor = &colors[color];
+		auto &c = *wcolor;
+		r = c[0], g = c[1], b = c[2];
+	}
+
+	int movement (int size, int i) {
+		float local_speed = cfg.speed * 100.0f;
+		float offset = t * local_speed;
+		int seg_size = cfg.num_leds / size;
+		return static_cast<int>(i + offset) / seg_size % size;
 	}
 
 	void modes(int i) {
-		auto [static_color, color1, color2, wave, exs_effect] = load_effects(i);
+		auto [static_color, wave, exs_effect] = load_user_settings(i);
 		if (static_color != nullptr) {
 			auto &c = *static_color;
 			r = c[0], g = c[1], b = c[2];
 			if (exs_effect) {
 				r *= wave, g *= wave, b *= wave;
 			}
-		} else if (color1 && color2 ) {
-			int midpoint = cfg.num_leds / 2;
-			auto &c = i < midpoint ? *color1 : *color2;
-			r = c[0]; g = c[1]; b = c[2];
-			if (exs_effect) {
-				r *= wave; g *= wave; b *= wave;
-			}
+		} else if (cfg.mode.find('-') != std::string::npos) {
+			auto [color1, color2] = what_colors(cfg.mode);
+			if (color1 && color2 ) {
+				const int midpoint = cfg.num_leds / 2;
+				auto &c = i < midpoint ? *color1 : *color2;
+				r = c[0]; g = c[1]; b = c[2];
+				if (exs_effect) {
+					r *= wave; g *= wave; b *= wave;
+				}
+			} else throw std::runtime_error("Unknown colors: " + cfg.mode);
 		} else if (cfg.mode == "rainbow") {
-			float hue = fmodf(t + i * 0.05f, 6.0f);
-			float x = 255.0f * (1.0f - fabsf(fmodf(hue, 2.0f) - 1.0f));
-			if (hue < 1.0f)  { r = 255; g = x;   b = 0; }
-			else if (hue < 2.0f) { r = x;   g = 255; b = 0; }
-			else if (hue < 3.0f) { r = 0;   g = 255; b = x; }
-			else if (hue < 4.0f) { r = 0;   g = x;   b = 255; }
-			else if (hue < 5.0f) { r = x;   g = 0;   b = 255; }
-			else { r = 255; g = 0; b = x; }
+			static const std::string seq[] = {
+				"red", "orange", "yellow", "green", "azure", "blue", "purple"
+			};
+			load_color(seq[movement(std::size(seq), i)]);
 		} else if (cfg.mode == "neon") {
-			float wave = (sinf(t + i * 0.1f) + 1.0f) / 2.0f;
-			r = 120 + 135 * sinf(t * 0.5f + i * 0.05f) / 2.0f;
-			b = 255 * wave;
+			auto [wave, size] = load_effect("forward_breathing", i);
+			r = 120 + 135 * wave[0];
+			b = 255 * wave[1];
+		} else if (cfg.mode == "google") {
+			static const std::string seq[] = { "red", "yellow", "green", "blue" };
+			load_color(seq[movement(std::size(seq), i)]);
 		} else throw std::runtime_error("Unknown mode: " + cfg.mode);
 	}
 
@@ -184,6 +225,7 @@ class Run {
 	Device device;
 	std::vector<unsigned char> payload;
 	std::vector<unsigned char> nulls;
+	static constexpr float float_limit = 10e37f;
 	void push_colors () {
 		for (int i = 0; i < config.num_leds; ++i) {
 			effect.modes(i);
@@ -224,7 +266,7 @@ class Run {
 			push_colors();
 			send_packet();
 			effect.t += config.speed;
-			if (effect.t >= 10e37) effect.t = 0.0f;
+			if (effect.t >= float_limit) effect.t = 0.0f;
 			usleep(20000); // 20ms = 50 FPS
 		}
 	}
